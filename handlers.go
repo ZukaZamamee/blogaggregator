@@ -8,6 +8,7 @@ import (
 
 	"github.com/bootdotdev/curriculum/blogaggregator/internal/database"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 func handlerLogin(s *state, cmd command) error {
@@ -141,7 +142,18 @@ func handlerAddFeed(s *state, cmd command) error {
 	if err != nil {
 		return fmt.Errorf("error creating feed %w", err)
 	}
-	fmt.Printf("New Feed Info: %+v", feed)
+	fmt.Printf("New Feed Info: %+v\n", feed)
+
+	followCmd := command{
+		Name: "follow",
+		Args: []string{feedURL},
+	}
+
+	err = handlerFollowFeed(s, followCmd)
+	if err != nil {
+		return fmt.Errorf("error following new feed %w", err)
+	}
+
 	return nil
 }
 
@@ -155,7 +167,70 @@ func handlerGetFeeds(s *state, cmd command) error {
 		return fmt.Errorf("error getting feeds %w", err)
 	}
 	for _, feed := range feeds {
-		fmt.Printf("* Feed: \"%s\" URL: \"%s\" Created By: %s\n", feed.Name, feed.Url, feed.UserName)
+		fmt.Printf("* Feed: \"%s\" URL: \"%s\" Creator: %s\n", feed.Name, feed.Url, feed.UserName)
+	}
+
+	return nil
+}
+
+func handlerFollowFeed(s *state, cmd command) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("usage: %s \"url\"", cmd.Name)
+	}
+
+	feedURL := cmd.Args[0]
+	feed, err := s.db.GetFeedByURL(context.Background(), feedURL)
+	if err != nil {
+		return fmt.Errorf("error getting feed by URL: %w", err)
+	}
+
+	currentUser := s.cfg.CurrentUserName
+	user, err := s.db.GetUser(context.Background(), currentUser)
+	if err != nil {
+		return fmt.Errorf("error getting current user info %w", err)
+	}
+
+	newFeedFollow := database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	}
+
+	newFeedFollowRow, err := s.db.CreateFeedFollow(context.Background(), newFeedFollow)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && string(pqErr.Code) == "23505" {
+			fmt.Println("You're already following that feed.")
+			return nil
+		}
+		return err
+	}
+
+	fmt.Printf("Feed Name: %s Current User: %s\n", newFeedFollowRow.FeedName, newFeedFollowRow.UserName)
+
+	return nil
+}
+
+func handlerGetFollowingFeeds(s *state, cmd command) error {
+	if len(cmd.Args) != 0 {
+		return fmt.Errorf("usage: %s", cmd.Name)
+	}
+
+	currentUser := s.cfg.CurrentUserName
+	user, err := s.db.GetUser(context.Background(), currentUser)
+	if err != nil {
+		return fmt.Errorf("error getting current user info %w", err)
+	}
+
+	followedFeeds, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
+	if err != nil {
+		return fmt.Errorf("error getting followed feeds %w", err)
+	}
+
+	fmt.Printf("%s's Followed Feeds:\n", user.Name)
+	for _, feed := range followedFeeds {
+		fmt.Printf("* %s\n", feed.FeedName)
 	}
 
 	return nil
