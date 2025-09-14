@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/bootdotdev/curriculum/blogaggregator/internal/database"
@@ -101,19 +104,31 @@ func handlerGetUsers(s *state, cmd command) error {
 }
 
 func handlerAgg(s *state, cmd command) error {
-	if len(cmd.Args) != 0 {
-		return fmt.Errorf("usage: %s", cmd.Name)
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("usage: %s <time between reqs> ", cmd.Name)
 	}
 
-	feedURL := "https://www.wagslane.dev/index.xml"
+	time_between_reqs := cmd.Args[0]
 
-	rssFeed, err := FetchFeed(context.Background(), feedURL)
+	timeBetweenRequests, err := time.ParseDuration(time_between_reqs)
 	if err != nil {
-		return fmt.Errorf("couldn't fetch feed: %w", err)
+		return fmt.Errorf("error parsing time between requests: %w", err)
 	}
 
-	fmt.Printf("Feed: %+v\n", rssFeed)
-	return nil
+	fmt.Printf("Collecting feeds every %v\n", timeBetweenRequests.String())
+
+	err = scrapeFeeds(s)
+	if err != nil {
+		log.Printf("error scraping feed %v\n", err)
+	}
+
+	ticker := time.NewTicker(timeBetweenRequests)
+	for ; ; <-ticker.C {
+		err = scrapeFeeds(s)
+		if err != nil {
+			log.Printf("error scraping feed %v\n", err)
+		}
+	}
 }
 
 func handlerAddFeed(s *state, cmd command, user database.User) error {
@@ -242,5 +257,49 @@ func handlerUnfollowFeed(s *state, cmd command, user database.User) error {
 
 	fmt.Printf("Feed Name: %s unfollowed by User: %s\n", feed.Name, user.Name)
 
+	return nil
+}
+
+func handlerBrowsePosts(s *state, cmd command, user database.User) error {
+	limit := int32(2) // default
+
+	switch len(cmd.Args) {
+	case 0:
+		// keep default
+	case 1:
+		n, err := strconv.Atoi(cmd.Args[0])
+		if err != nil || n < 1 || n > int(math.MaxInt32) {
+			return fmt.Errorf("limit must be a positive integer")
+		}
+		limit = int32(n)
+	default:
+		return fmt.Errorf("usage: %s <limit>", cmd.Name)
+	}
+
+	params := database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit:  limit,
+	}
+
+	posts, err := s.db.GetPostsForUser(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("error getting posts for user: %w", err)
+	}
+
+	if len(posts) == 0 {
+		fmt.Println("No posts to display")
+		return nil
+	}
+	for _, post := range posts {
+		desc := "(no description)"
+		if post.Description.Valid {
+			desc = post.Description.String
+		}
+		pub := "unknown"
+		if post.PublishedAt.Valid {
+			pub = post.PublishedAt.Time.Format(time.RFC822)
+		}
+		fmt.Printf("Feed: %s\n%s\n%s\nPublished: %s\n%s\n\n", post.FeedName, post.Title, post.Url, pub, desc)
+	}
 	return nil
 }
